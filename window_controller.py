@@ -66,7 +66,6 @@ class WindowController:
             print(f"Connected to device: {self.device.serial}")
 
             self.frame_lock = threading.Lock()
-            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
@@ -78,10 +77,91 @@ class WindowController:
                         self.last_frame = frame
                         self.last_frame_time = time.time()
 
-            self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
-            self.scrcpy_client.start(threaded=True)
+            # Add disconnect listener for debugging
+            def on_disconnect():
+                print("WARNING: Scrcpy video stream disconnected!")
+
+            # Try multiple initialization strategies
+            scrcpy_started = False
+            last_error = None
+
+            # Strategy 1: Standard settings (works for most devices)
+            if not scrcpy_started:
+                try:
+                    print("Attempting scrcpy connection with standard settings...")
+                    self.scrcpy_client = scrcpy.Client(
+                        device=self.device,
+                        max_width=1920,
+                        bitrate=8000000,
+                        max_fps=30,
+                        flip=False,
+                        block_frame=False,
+                        stay_awake=True,
+                        lock_screen_orientation=0,
+                        connection_timeout=10
+                    )
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_DISCONNECT, on_disconnect)
+                    self.scrcpy_client.start(threaded=True)
+                    time.sleep(2.0)
+                    scrcpy_started = True
+                    print("✓ Scrcpy started with standard settings")
+                except Exception as e:
+                    last_error = e
+                    print(f"✗ Standard settings failed: {e}")
+
+            # Strategy 2: Minimal settings (more compatible)
+            if not scrcpy_started:
+                try:
+                    print("Retrying with minimal settings...")
+                    if hasattr(self, 'scrcpy_client'):
+                        try:
+                            self.scrcpy_client.stop()
+                        except:
+                            pass
+                    self.scrcpy_client = scrcpy.Client(device=self.device)
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_DISCONNECT, on_disconnect)
+                    self.scrcpy_client.start(threaded=True)
+                    time.sleep(2.0)
+                    scrcpy_started = True
+                    print("✓ Scrcpy started with minimal settings")
+                except Exception as e:
+                    last_error = e
+                    print(f"✗ Minimal settings failed: {e}")
+
+            # Strategy 3: Low quality (maximum compatibility)
+            if not scrcpy_started:
+                try:
+                    print("Retrying with low quality settings...")
+                    if hasattr(self, 'scrcpy_client'):
+                        try:
+                            self.scrcpy_client.stop()
+                        except:
+                            pass
+                    self.scrcpy_client = scrcpy.Client(
+                        device=self.device,
+                        max_width=1280,
+                        bitrate=4000000,
+                        max_fps=15
+                    )
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+                    self.scrcpy_client.add_listener(scrcpy.EVENT_DISCONNECT, on_disconnect)
+                    self.scrcpy_client.start(threaded=True)
+                    time.sleep(2.0)
+                    scrcpy_started = True
+                    print("✓ Scrcpy started with low quality settings")
+                except Exception as e:
+                    last_error = e
+                    print(f"✗ Low quality settings failed: {e}")
+
+            if not scrcpy_started:
+                raise ConnectionError(
+                    f"Failed to start scrcpy with any settings. Last error: {last_error}\n"
+                    "See SCRCPY_TROUBLESHOOTING.md for help."
+                )
+
             atexit.register(self.close)
-            print("Scrcpy client started successfully.")
 
         except Exception as e:
             raise ConnectionError(f"Failed to initialize Scrcpy: {e}")
@@ -98,14 +178,26 @@ class WindowController:
     def screenshot(self, array=False):
         frame, frame_time = self.get_latest_frame()
 
-        deadline = time.time() + 15
+        deadline = time.time() + 20  # Increased timeout
+        wait_count = 0
         while frame is None:
             if time.time() > deadline:
-                raise ConnectionError(
-                    "No frame received from scrcpy within 15s. "
-                    "Check USB/emulator connection."
+                # Provide detailed error information
+                error_msg = (
+                    "No frame received from scrcpy within 20s.\n"
+                    f"Device: {self.device.serial}\n"
+                    "Troubleshooting:\n"
+                    "1. Check USB debugging is enabled on device\n"
+                    "2. Try running: adb kill-server && adb start-server\n"
+                    "3. Make sure no other scrcpy instance is running\n"
+                    "4. Try disconnecting and reconnecting USB cable\n"
+                    "5. Check if device has screen timeout disabled"
                 )
-            print("Waiting for first frame...")
+                raise ConnectionError(error_msg)
+
+            wait_count += 1
+            if wait_count % 10 == 0:  # Print every 1 second instead of every 0.1s
+                print(f"Waiting for first frame... ({wait_count//10}s)")
             time.sleep(0.1)
             frame, frame_time = self.get_latest_frame()
 
